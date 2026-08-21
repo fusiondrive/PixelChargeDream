@@ -1,9 +1,9 @@
 package com.pixelcharge.hook;
 
 import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
-import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.util.Log;
 
@@ -12,11 +12,11 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
@@ -24,15 +24,13 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 public final class PixelChargeDreamHook implements IXposedHookLoadPackage {
     private static final String TAG = "PixelChargeDreamHook";
 
-    private static final String PKG_SYSTEM_SERVER = "android";
     private static final String PKG_DREAMLINER = "com.google.android.apps.dreamliner";
     private static final String PKG_SETTINGS = "com.android.settings";
     private static final String PKG_SYSTEMUI = "com.android.systemui";
 
-    private static final String CHARGING_DREAM_CLASS = "com.google.android.apps.dreamliner.kitt.dream.fuelgauge.ChargingDreamService";
+    private static final String RECEIVER_CHARGING_EXP = "com.google.android.apps.dreamliner.settings.kitt.ChargingExperienceReceiver";
 
     private static final Set<String> TARGET_PACKAGES = new HashSet<>(Arrays.asList(
-            PKG_SYSTEM_SERVER,
             PKG_DREAMLINER,
             PKG_SETTINGS,
             PKG_SYSTEMUI
@@ -47,87 +45,19 @@ public final class PixelChargeDreamHook implements IXposedHookLoadPackage {
         Log.i(TAG, "PixelChargeDreamHook attached to: " + lpparam.packageName);
 
         try {
-            if (PKG_SYSTEM_SERVER.equals(lpparam.packageName)) {
-                hookSystemServer(lpparam);
-            } else if (PKG_DREAMLINER.equals(lpparam.packageName)) {
-                spoofPixel11Identity(lpparam);
-                preventComponentDisabling(lpparam);
+            // 1. Process-level Model Spoofing
+            spoofPixel11Identity(lpparam);
+
+            // 2. Target specific hooks
+            if (PKG_DREAMLINER.equals(lpparam.packageName)) {
+                neutralizeRogueReceivers(lpparam);
+                hookPackageManagerCalls(lpparam);
                 hookDreamliner(lpparam);
             } else if (PKG_SETTINGS.equals(lpparam.packageName)) {
-                spoofPixel11Identity(lpparam);
                 hookSettings(lpparam);
             }
         } catch (Throwable t) {
             Log.e(TAG, "Error in PixelChargeDreamHook for " + lpparam.packageName, t);
-        }
-    }
-
-    private void hookSystemServer(LoadPackageParam lpparam) {
-        Log.i(TAG, "Hooking system_server PackageManagerService and DreamManagerService...");
-
-        // 1. Hook PackageManagerService to prevent disabling ChargingDreamService
-        try {
-            Class<?> pmsClass = XposedHelpers.findClassIfExists("com.android.server.pm.PackageManagerService", lpparam.classLoader);
-            if (pmsClass != null) {
-                // Intercept setComponentEnabledSetting in system_server
-                for (Method m : pmsClass.getDeclaredMethods()) {
-                    if ("setComponentEnabledSetting".equals(m.getName())) {
-                        XposedBridge.hookMethod(m, new XC_MethodHook() {
-                            @Override
-                            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                for (Object arg : param.args) {
-                                    if (arg instanceof ComponentName) {
-                                        ComponentName cn = (ComponentName) arg;
-                                        if (cn.getClassName().contains("ChargingDreamService")) {
-                                            // Force enabled
-                                            for (int i = 0; i < param.args.length; i++) {
-                                                if (param.args[i] instanceof Integer && (Integer) param.args[i] != 0 && (Integer) param.args[i] != 1) {
-                                                    param.args[i] = PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "PMS hook skipped: " + t.getMessage());
-        }
-
-        // 2. Hook DreamManagerService to ensure ChargingDreamService is always in the available dream components list
-        try {
-            Class<?> dmsClass = XposedHelpers.findClassIfExists("com.android.server.dreams.DreamManagerService", lpparam.classLoader);
-            if (dmsClass != null) {
-                for (Method m : dmsClass.getDeclaredMethods()) {
-                    if ("getDreamComponentsForUser".equals(m.getName()) || "getDreamComponents".equals(m.getName())) {
-                        XposedBridge.hookMethod(m, new XC_MethodHook() {
-                            @Override
-                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                ComponentName[] components = (ComponentName[]) param.getResult();
-                                if (components != null) {
-                                    boolean hasCharging = false;
-                                    for (ComponentName cn : components) {
-                                        if (cn != null && cn.getClassName().contains("ChargingDreamService")) {
-                                            hasCharging = true;
-                                            break;
-                                        }
-                                    }
-                                    if (!hasCharging) {
-                                        ComponentName[] newComponents = Arrays.copyOf(components, components.length + 1);
-                                        newComponents[components.length] = new ComponentName(PKG_DREAMLINER, CHARGING_DREAM_CLASS);
-                                        param.setResult(newComponents);
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "DMS hook skipped: " + t.getMessage());
         }
     }
 
@@ -169,7 +99,22 @@ public final class PixelChargeDreamHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void preventComponentDisabling(LoadPackageParam lpparam) {
+    private void neutralizeRogueReceivers(LoadPackageParam lpparam) {
+        try {
+            Class<?> receiverClass = XposedHelpers.findClassIfExists(RECEIVER_CHARGING_EXP, lpparam.classLoader);
+            if (receiverClass != null) {
+                // Completely neutralize ChargingExperienceReceiver so it can never run or disable anything
+                XposedHelpers.findAndHookMethod(receiverClass, "onReceive", Context.class, Intent.class,
+                        XC_MethodReplacement.returnConstant(null));
+                Log.i(TAG, "Successfully neutralized ChargingExperienceReceiver onReceive");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to neutralize ChargingExperienceReceiver: " + t.getMessage());
+        }
+    }
+
+    private void hookPackageManagerCalls(LoadPackageParam lpparam) {
+        // 1. Hook ApplicationPackageManager
         try {
             Class<?> pmClass = XposedHelpers.findClassIfExists("android.app.ApplicationPackageManager", lpparam.classLoader);
             if (pmClass != null) {
@@ -196,7 +141,49 @@ public final class PixelChargeDreamHook implements IXposedHookLoadPackage {
                         });
             }
         } catch (Throwable t) {
-            Log.w(TAG, "PackageManager hook skipped: " + t.getMessage());
+            Log.w(TAG, "ApplicationPackageManager hook skipped: " + t.getMessage());
+        }
+
+        // 2. Hook IPackageManager IPC Proxy directly
+        try {
+            Class<?> ipmProxyClass = XposedHelpers.findClassIfExists("android.content.pm.IPackageManager$Stub$Proxy", lpparam.classLoader);
+            if (ipmProxyClass != null) {
+                for (Method m : ipmProxyClass.getDeclaredMethods()) {
+                    if ("setComponentEnabledSetting".equals(m.getName())) {
+                        XposedBridge.hookMethod(m, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                                for (int i = 0; i < param.args.length; i++) {
+                                    if (param.args[i] instanceof ComponentName) {
+                                        ComponentName cn = (ComponentName) param.args[i];
+                                        if (cn.getClassName().contains("ChargingDreamService")) {
+                                            for (int j = 0; j < param.args.length; j++) {
+                                                if (param.args[j] instanceof Integer && ((Integer) param.args[j] == PackageManager.COMPONENT_ENABLED_STATE_DISABLED || (Integer) param.args[j] == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)) {
+                                                    param.args[j] = PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    } else if ("getComponentEnabledSetting".equals(m.getName())) {
+                        XposedBridge.hookMethod(m, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                if (param.args.length > 0 && param.args[0] instanceof ComponentName) {
+                                    ComponentName cn = (ComponentName) param.args[0];
+                                    if (cn.getClassName().contains("ChargingDreamService")) {
+                                        param.setResult(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "IPackageManager hook skipped: " + t.getMessage());
         }
     }
 
