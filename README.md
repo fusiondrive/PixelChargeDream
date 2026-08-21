@@ -1,31 +1,31 @@
 # PixelChargeDream
 
-A dedicated, lightweight LSPosed module to unlock the standalone **Pixel 11 "Charge" ScreenSaver (`ChargingDreamService`)** on older Google Pixel devices (e.g. Pixel 10 Pro XL) running Android 15+.
+An LSPosed module to unlock the Pixel 11 standalone Charge Screensaver (`ChargingDreamService`) on older Pixel devices running Android 15+.
 
-## Features
+## Overview
 
-- **Pixel 11 Charge ScreenSaver Unlocked**: Unlocks the dedicated charging screensaver with large battery percentage, 80%/100% milestone progress bar, and estimated completion time.
-- **Process-Level Model Isolation**: Spoofs `Build.MODEL` and `SystemProperties` exclusively inside `com.google.android.apps.dreamliner` and `com.android.settings`, keeping the global system properties 100% native.
-- **Anti-Component-Disable Protection**: Intercepts `PackageManager.setComponentEnabledSetting` calls to prevent background receivers from disabling `ChargingDreamService`.
-- **Zero System Partition Modifications**: Pure memory-level hook without modifying `/system`, `/vendor`, or `/product`.
+Google restricts the new standalone charging screensaver (`com.google.android.apps.dreamliner/.kitt.dream.fuelgauge.ChargingDreamService`) to Pixel 11 devices via runtime model checks and background receiver state enforcement.
 
-## Building
+This module resolves these restrictions by:
+1. Spoofing `Build.MODEL` (`Pixel 11 Pro XL`) and `ro.product.model` exclusively inside `com.google.android.apps.dreamliner` and `com.android.settings`.
+2. Intercepting `PackageManager.setComponentEnabledSetting` calls to prevent `ChargingExperienceReceiver` from disabling `ChargingDreamService`.
+3. Intercepting `DreamPickerController` in `Settings` to ensure the "Charge" card is rendered in the Screensaver picker.
+
+## Scope
+
+- `com.google.android.apps.dreamliner`
+- `com.android.settings`
+
+## Build
 
 ```bash
 ./build.sh
 ```
 
-The compiled and signed debug APK will be placed at `build/pixel-charge-dream-debug.apk`.
+Output: `build/pixel-charge-dream-debug.apk`
 
-## Installation
+## Usage
 
-1. Install the built APK:
-   ```bash
-   adb install -r -d build/pixel-charge-dream-debug.apk
-   ```
-2. Enable the module in LSPosed Manager.
-3. Select scope:
-   - `Pixel Stand` (`com.google.android.apps.dreamliner`)
-   - `Settings` (`com.android.settings`)
-4. Reboot or restart target apps.
-5. Go to **Settings > Display & touch > Screen saver** and select **"Charge"**!
+1. Build and install the APK.
+2. Enable in LSPosed and assign scope to `Pixel Stand` (`com.google.android.apps.dreamliner`) and `Settings` (`com.android.settings`).
+3. Open **Settings > Display & touch > Screen saver** and select **Charge**.
